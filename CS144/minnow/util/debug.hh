@@ -11,12 +11,13 @@
 void debug_str( std::string_view message );
 
 template<typename... Args>
-void debug( std::format_string<Args...> fmt, Args&&... args )
+// NOLINTNEXTLINE(cppcoreguidelines-missing-std-forward)
+void debug( std::format_string<Args...> fmt [[maybe_unused]], Args&&... args [[maybe_unused]] )
 {
 #ifndef NDEBUG
   debug_str( format( fmt, std::forward<Args>( args )... ) );
 #endif
 }
 
-void set_debug_handler( void ( * )( void*, std::string_view ), void* arg );
+void set_debug_handler( void ( *handler )( void*, std::string_view ), void* arg );
 void reset_debug_handler();
