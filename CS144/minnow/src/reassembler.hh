@@ -1,12 +1,35 @@
 #pragma once
 
 #include "byte_stream.hh"
+#include <cstdint>
+#include <map>
+
+struct Substring
+{
+  std::string data;
+  bool is_last_substring;
+
+  Substring() : data( "" ), is_last_substring( false ) {}
+  Substring( const std::string& d, bool is_last ) : data( d ), is_last_substring( is_last ) {}
+
+  uint64_t size() const { return data.size(); }
+};
+
+class SubstringMap : public std::map<uint64_t, Substring>
+{
+public:
+  void insert_and_merge( uint64_t first_index, std::string data, bool is_last_substring );
+};
 
 class Reassembler
 {
 public:
   // Construct Reassembler to write into given ByteStream.
   explicit Reassembler( ByteStream&& output ) : output_( std::move( output ) ) {}
+
+  uint64_t capacity() const { return output_.capacity(); }
+  uint64_t first_unpoped_index() const { return first_unpoped_index_; }
+  uint64_t first_unacceptabled_index() const { return first_unpoped_index_ + output_.capacity(); }
 
   /*
    * Insert a new substring to be reassembled into a ByteStream.
@@ -43,4 +66,6 @@ public:
 
 private:
   ByteStream output_;
+  uint64_t first_unpoped_index_ {};
+  SubstringMap substrings_map {};
 };
