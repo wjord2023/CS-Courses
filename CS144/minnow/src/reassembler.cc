@@ -11,7 +11,9 @@ void SubstringMap::insert_and_merge( uint64_t first_index, std::string data, boo
   bool new_is_last_substring = is_last_substring;
 
   uint64_t last_index = first_index + data.size();
-  for ( auto it = this->begin(); it != this->end(); ) {
+
+  auto it = this->begin();
+  while ( it != this->end() ) {
     uint64_t start = it->first;
     uint64_t end = start + it->second.data.size();
     string& old_data = it->second.data;
