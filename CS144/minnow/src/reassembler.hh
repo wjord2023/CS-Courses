@@ -31,6 +31,9 @@ public:
   uint64_t first_unpoped_index() const { return first_unpoped_index_; }
   uint64_t first_unacceptabled_index() const { return first_unpoped_index_ + output_.capacity(); }
 
+  void set_error() { output_.set_error(); }
+  bool has_error() const { return output_.has_error(); }
+
   /*
    * Insert a new substring to be reassembled into a ByteStream.
    *   `first_index`: the index of the first byte of the substring
