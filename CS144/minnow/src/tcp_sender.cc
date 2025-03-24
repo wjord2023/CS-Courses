@@ -25,17 +25,18 @@ uint64_t TCPSender::consecutive_retransmissions() const
 
 void TCPSender::push( const TransmitFunction& transmit )
 {
-  while ( window_size_ > 0 ) {
-    debug( "window_size_: {}", window_size_ );
+  while ( window_size_ > 0 && !closed_ ) {
     string data;
     TCPSenderMessage msg = make_empty_message();
     msg.SYN = ( sended_len == 0 );
-    msg.FIN = reader().is_finished();
 
-    window_size_ = ( window_size_ > msg.sequence_length() ) ? ( window_size_ - msg.sequence_length() ) : 0;
+    window_size_ = ( window_size_ > msg.SYN ) ? ( window_size_ - msg.SYN ) : 0;
     read( reader(), min( window_size_, TCPConfig::MAX_PAYLOAD_SIZE ), data );
     msg.payload = std::move( data );
     window_size_ -= msg.payload.size();
+
+    msg.FIN = reader().is_finished();
+    window_size_ = ( window_size_ > msg.FIN ) ? ( window_size_ - msg.FIN ) : 0;
 
     if ( msg.sequence_length() == 0 )
       break;
@@ -46,7 +47,7 @@ void TCPSender::push( const TransmitFunction& transmit )
     sended_len += msg.sequence_length();
 
     if ( msg.FIN )
-      break;
+      closed_ = true;
   }
 }
 
@@ -59,9 +60,14 @@ TCPSenderMessage TCPSender::make_empty_message() const
 
 void TCPSender::receive( const TCPReceiverMessage& msg )
 {
+  uint64_t next_seqno_ = ( isn_ + sended_len ).unwrap( isn_, sended_len );
+
   window_size_ = ( msg.window_size == 0 ) ? 1 : msg.window_size;
   if ( msg.ackno.has_value() ) {
     ackno_ = msg.ackno.value().unwrap( isn_, sended_len );
+    if ( ackno_ > next_seqno_ ) {
+      return;
+    }
 
     for ( auto it = unacked_segments_.begin(); it != unacked_segments_.end(); ) {
       if ( it->seqno.unwrap( isn_, sended_len ) + it->sequence_length() <= ackno_ ) {

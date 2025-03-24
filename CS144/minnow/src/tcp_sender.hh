@@ -53,4 +53,6 @@ private:
   uint64_t ackno_ {};
 
   std::vector<TCPSenderMessage> unacked_segments_ {};
+
+  bool closed_ {};
 };
