@@ -59,7 +59,6 @@ void Reassembler::insert( uint64_t first_index, string data, bool is_last_substr
   }
   if ( last_index > first_unacceptabled_index() ) {
     data = data.substr( 0, first_unacceptabled_index() - first_index );
-    last_index = first_unacceptabled_index();
     is_last_substring = false;
   }
 

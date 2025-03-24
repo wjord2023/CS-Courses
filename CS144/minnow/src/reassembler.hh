@@ -30,6 +30,7 @@ public:
   uint64_t capacity() const { return output_.capacity(); }
   uint64_t first_unpoped_index() const { return first_unpoped_index_; }
   uint64_t first_unacceptabled_index() const { return first_unpoped_index_ + output_.capacity(); }
+  bool is_finished() const { return writer().is_closed(); } // Help to determine whether recieved the FIN flag
 
   void set_error() { output_.set_error(); }
   bool has_error() const { return output_.has_error(); }

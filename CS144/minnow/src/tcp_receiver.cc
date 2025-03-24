@@ -13,12 +13,13 @@ void TCPReceiver::receive( TCPSenderMessage message )
     ISN_ = message.seqno;
 
   if ( ISN_.has_value() ) {
+    // Stream Indices Omit SYN/FIN, So if the segment not include SYN, first_index should minus 1
     uint64_t first_index
       = message.seqno.unwrap( ISN_.value(), reassembler_.first_unpoped_index() ) - ( !message.SYN );
     reassembler_.insert( first_index, message.payload, message.FIN );
-    debug( "{}", reassembler_.count_bytes_pending() );
-    next_seqno_ = Wrap32::wrap( reassembler_.first_unpoped_index(), ISN_.value() ) + 1
-                  + ( reassembler_.writer().is_closed() );
+
+    // If FIN is received, next_seqno_ will be the first byte after the FIN
+    next_seqno_ = Wrap32::wrap( reassembler_.first_unpoped_index(), ISN_.value() ) + 1 + reassembler_.is_finished();
   }
   send();
 }
