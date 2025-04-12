@@ -50,6 +50,9 @@ func (lk *Lock) Acquire() {
 			if err == rpc.OK {
 				return
 			}
+			if err == rpc.ErrMaybe {
+				lk.Release()
+			}
 		}
 
 		time.Sleep(10 * time.Millisecond)
@@ -68,7 +71,7 @@ func (lk *Lock) Release() {
 	}
 
 	var puterr rpc.Err
-	for puterr != rpc.OK {
+	for puterr != rpc.OK && puterr != rpc.ErrMaybe {
 		puterr = lk.ck.Put(lk.lockKey, "", version)
 	}
 }
