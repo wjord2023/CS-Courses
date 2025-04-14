@@ -33,12 +33,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.votedFor = -1
-		rf.convertToFollower()
+		rf.mu.Unlock()
+		rf.convertToFollower(args.Term)
+		rf.mu.Lock()
 	}
 
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.candidateLogUptodate(args) {
+		DPrintf("server %d vote for %d", rf.me, args.CandidateId)
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	} else {
@@ -74,9 +75,49 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// DPrintf("server %d receive AppendEntries from %d, args: %+v", rf.me, args.LeaderId, args)
 	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	defer func() {
+		if args.LeaderCommit > rf.commitIndex {
+			DPrintf("leadercommit %d lastlogindex %d logs %v", args.LeaderCommit, rf.LastLogIndex(), rf.logs)
+			rf.commitIndex = min(args.LeaderCommit, rf.LastLogIndex())
+			DPrintf("follow %d update commitIndex to %d", rf.me, rf.commitIndex)
+		}
+		rf.mu.Unlock()
+	}()
+
+	reply.Term = rf.currentTerm
+	reply.Success = true
+
+	if rf.currentTerm > args.Term {
+		reply.Term = rf.currentTerm
+		reply.Success = false
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.mu.Unlock()
+		rf.convertToFollower(args.Term)
+		rf.mu.Lock()
+	}
 
 	rf.hearedHeartBeat = true
 	rf.leaderId = args.LeaderId
+
+	if args.PrevLogIndex > rf.LastLogIndex() {
+		reply.Success = false
+		DPrintf("server %d receive AppendEntries from %d, args: %+v, but prevlogindex %d > lastlogindex %d", rf.me, args.LeaderId, args, args.PrevLogIndex, rf.LastLogIndex())
+		return
+	}
+
+	if rf.logs[args.PrevLogIndex].Term != args.PrevLogTerm {
+		reply.Success = false
+		DPrintf("server %d receive AppendEntries from %d, args: %+v, but prevlogterm %d != %d", rf.me, args.LeaderId, args, rf.logs[args.PrevLogIndex].Term, args.PrevLogTerm)
+		return
+	}
+
+	if args.Entries != nil {
+		rf.logs = rf.logs[:args.PrevLogIndex+1]
+		rf.logs = append(rf.logs, args.Entries...)
+	}
 }
