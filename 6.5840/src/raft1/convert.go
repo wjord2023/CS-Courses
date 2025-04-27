@@ -13,9 +13,9 @@ func (rf *Raft) convertToLeader() {
 	DPrintf(rf.state, "[term %d] server %v convert to leader", rf.currentTerm, rf.me)
 
 	rf.state = Leader
-	rf.nextIndex = fillSlice(len(rf.peers), rf.logs.LastIndex()+1)
+	rf.nextIndex = fillSlice(len(rf.peers), rf.LastLogIndex()+1)
 	rf.matchIndex = fillSlice(len(rf.peers), 0)
-	rf.logs.Append(nil, rf.currentTerm)
+	rf.AppendLog(nil)
 	// rf.writeVotedFor(-1)
 	rf.WakeAllAppender()
 }
@@ -23,7 +23,7 @@ func (rf *Raft) convertToLeader() {
 func (rf *Raft) convertToCondidate() {
 	DPrintf(rf.state, "[term %d] server %v convert to candidate", rf.currentTerm, rf.me)
 	rf.state = Candidate
-	rf.writeCurrentTerm(rf.currentTerm + 1)
+	rf.currentTerm += 1
 
 	// start election
 	go rf.startElection()
@@ -32,7 +32,7 @@ func (rf *Raft) convertToCondidate() {
 func (rf *Raft) startElection() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.writeVotedFor(rf.me)
+	rf.votedFor = rf.me
 
 	numVotes := 1
 

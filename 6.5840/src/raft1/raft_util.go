@@ -11,7 +11,7 @@ func (rf *Raft) PrevLogIndex(server int) int {
 
 func (rf *Raft) PrevLogTerm(server int) int {
 	prevIndex := rf.PrevLogIndex(server)
-	return rf.logs[rf.logs.RIndex(prevIndex)].Term
+	return rf.log[prevIndex-rf.logStart].Term
 }
 
 func (rf *Raft) electionTimerReset() {
@@ -20,28 +20,4 @@ func (rf *Raft) electionTimerReset() {
 
 func (rf *Raft) heartbeatTimerReset() {
 	rf.heartbeatTimer.Reset(50 * time.Millisecond)
-}
-
-func (rf *Raft) writeCurrentTerm(term int) {
-	if rf.currentTerm == term {
-		return
-	}
-	rf.currentTerm = term
-	rf.persist()
-}
-
-func (rf *Raft) writeVotedFor(votedFor int) {
-	if rf.votedFor == votedFor {
-		return
-	}
-	rf.votedFor = votedFor
-	rf.persist()
-}
-
-func (rf *Raft) appendLog(logs []Entries) {
-	if len(logs) == 0 {
-		return
-	}
-	rf.logs = append(rf.logs, logs...)
-	rf.persist()
 }

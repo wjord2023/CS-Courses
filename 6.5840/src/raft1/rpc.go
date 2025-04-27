@@ -40,7 +40,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.candidateLogUptodate(args) {
 		reply.VoteGranted = true
-		rf.writeVotedFor(args.CandidateId)
+		rf.votedFor = args.CandidateId
 		rf.electionTimerReset()
 	} else {
 		reply.VoteGranted = false
@@ -48,12 +48,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) candidateLogUptodate(args *RequestVoteArgs) bool {
-	if rf.logs.LastTerm() < args.LastLogTerm {
+	if rf.LastLogTerm() < args.LastLogTerm {
 		return true
-	} else if rf.logs.LastTerm() > args.LastLogTerm {
+	} else if rf.LastLogTerm() > args.LastLogTerm {
 		return false
 	} else {
-		return rf.logs.LastIndex() <= args.LastLogIndex
+		return rf.LastLogIndex() <= args.LastLogIndex
 	}
 }
 
@@ -61,8 +61,8 @@ func (rf *Raft) genRequestVoteArgs() *RequestVoteArgs {
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: rf.logs.LastIndex(),
-		LastLogTerm:  rf.logs.LastTerm(),
+		LastLogIndex: rf.LastLogIndex(),
+		LastLogTerm:  rf.LastLogTerm(),
 	}
 	return args
 }
@@ -103,8 +103,8 @@ type AppendEntriesArgs struct {
 	Term         int // leader’s term
 	PrevLogIndex int // index of log entry immediately preceding new ones
 
-	PrevLogTerm int  // term of prevLogIndex entry
-	Entries     Logs // log entries to store (empty for heartbeat; may send more than one for efficiency)
+	PrevLogTerm int       // term of prevLogIndex entry
+	Entries     []Entries // log entries to store (empty for heartbeat; may send more than one for efficiency)
 
 	LeaderCommit int // leader’s commitIndex
 }
@@ -117,8 +117,8 @@ func (rf *Raft) genAppendEntriesArgs(server int) *AppendEntriesArgs {
 		LeaderCommit: rf.commitIndex,
 	}
 
-	if rf.logs.LastIndex() >= rf.nextIndex[server] {
-		args.Entries = rf.logs[rf.logs.RIndex(args.PrevLogIndex+1):]
+	if rf.LastLogIndex() >= rf.nextIndex[server] {
+		args.Entries = rf.log[args.PrevLogIndex+1-rf.logStart:]
 	} else {
 		args.Entries = nil
 	}
@@ -157,35 +157,35 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// Reply false if log doesn’t contain an entry at prevLogIndex
 	// whose term matches prevLogTerm (§5.3)
-	if args.PrevLogIndex > rf.logs.LastIndex() {
+	if args.PrevLogIndex > rf.LastLogIndex() {
 		reply.Success = false
 		reply.XTerm = -1
 		reply.XIndex = -1
-		reply.XLen = rf.logs.LastIndex() + 1
+		reply.XLen = rf.LastLogIndex() + 1
 		return
 	}
 
-	term := rf.logs[rf.logs.RIndex(args.PrevLogIndex)].Term
+	term := rf.log[args.PrevLogIndex-rf.logStart].Term
 	if term != args.PrevLogTerm {
 		reply.Success = false
 		reply.XTerm = term
-		for i, log := range rf.logs {
+		for i, log := range rf.log {
 			if log.Term == term {
 				reply.XIndex = i
 				break
 			}
 		}
-		reply.XLen = rf.logs.LastIndex() + 1
+		reply.XLen = rf.LastLogIndex() + 1
 		return
 	}
 
 	if args.Entries != nil {
-		rf.logs = rf.logs[:rf.logs.RIndex(args.PrevLogIndex+1)]
-		rf.appendLog(args.Entries)
+		rf.log = rf.log[:args.PrevLogIndex+1-rf.logStart]
+		rf.log = append(rf.log, args.Entries...)
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
-		lastNewEntryIndex := rf.logs.LastIndex()
+		lastNewEntryIndex := rf.LastLogIndex()
 		newCommitIndex := min(args.LeaderCommit, lastNewEntryIndex)
 		if rf.commitIndex < newCommitIndex {
 			rf.commitIndex = newCommitIndex
@@ -223,11 +223,11 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	// Save snapshot file, discard any existing or partial snapshot
 	// with a smaller index
-	if rf.logs.LastIndex() >= args.LastIncludedIndex && rf.logs[args.LastIncludedIndex].Term == args.LastIncludedTerm {
+	if rf.LastLogIndex() >= args.LastIncludedIndex && rf.log[args.LastIncludedIndex].Term == args.LastIncludedTerm {
 		rf.Snapshot(args.LastIncludedIndex, args.Data)
 		return
 	} else {
-		rf.Snapshot(rf.logs.LastIndex(), args.Data)
+		rf.Snapshot(rf.LastLogIndex(), args.Data)
 	}
 
 	applyMsg := raftapi.ApplyMsg{SnapshotValid: true, Snapshot: args.Data, SnapshotTerm: args.LastIncludedTerm, SnapshotIndex: args.LastIncludedIndex}

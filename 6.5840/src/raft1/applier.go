@@ -11,11 +11,11 @@ func (rf *Raft) applier() {
 			rf.applyCond.Wait()
 		}
 		rf.lastApplied += 1
-		command := rf.logs[rf.logs.RIndex(rf.lastApplied)].Command
+		command := rf.log[rf.lastApplied-rf.logStart].Command
 		if command == nil {
 			continue
 		}
-		index := rf.logs[rf.logs.RIndex(rf.lastApplied)].Index
+		index := rf.log[rf.lastApplied-rf.logStart].Index
 		applyMag := raftapi.ApplyMsg{
 			CommandValid: true,
 			Command:      command,

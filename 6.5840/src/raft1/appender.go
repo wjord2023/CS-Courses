@@ -20,7 +20,7 @@ func (rf *Raft) appender(server int) {
 func (rf *Raft) canAppend(server int) bool {
 	rf.mu.RLock()
 	defer rf.mu.RUnlock()
-	return rf.state == Leader && rf.nextIndex[server] <= rf.logs.LastIndex()
+	return rf.state == Leader && rf.nextIndex[server] <= rf.LastLogIndex()
 }
 
 func (rf *Raft) WakeAllAppender() {
@@ -77,7 +77,7 @@ func (rf *Raft) quickUpdateNextIndex(server int, reply *AppendEntriesReply) {
 
 	leaderHasXterm := false
 	for i := rf.PrevLogIndex(server); i >= 0; i-- {
-		if rf.logs[rf.logs.RIndex(i)].Term == reply.XTerm {
+		if rf.log[i-rf.logStart].Term == reply.XTerm {
 			rf.nextIndex[server] = i + 1
 			leaderHasXterm = true
 			break

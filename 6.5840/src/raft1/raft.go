@@ -29,6 +29,12 @@ const (
 	Leader
 )
 
+type Entries struct {
+	Command any
+	Term    int
+	Index   int // index for apply command
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.RWMutex        // Lock to protect shared access to this peer's state
@@ -49,7 +55,9 @@ type Raft struct {
 	// Persistent state on all servers
 	currentTerm int
 	votedFor    int
-	logs        Logs
+
+	log      []Entries
+	logStart int // absolute index of the first log entry
 
 	// Volatile state on all servers
 	commitIndex int
@@ -62,6 +70,34 @@ type Raft struct {
 	state          ServerState
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
+}
+
+func (rf *Raft) LastLogIndex() int {
+	return rf.logStart + len(rf.log) - 1
+}
+
+func (rf *Raft) LastLogTerm() int {
+	return rf.log[len(rf.log)-1].Term
+}
+
+func (rf *Raft) NewLog() {
+	rf.log = []Entries{{nil, -1, 0}}
+	rf.logStart = 0
+}
+
+func (rf *Raft) AppendLog(command any) int {
+	var index int
+	if command == nil {
+		index = rf.LastCommandIndex() // no-op command don't update command index
+	} else {
+		index = rf.LastCommandIndex() + 1
+	}
+	rf.log = append(rf.log, Entries{command, rf.currentTerm, index})
+	return index
+}
+
+func (rf *Raft) LastCommandIndex() int {
+	return rf.log[len(rf.log)-1].Index
 }
 
 // return currentTerm and whether this server
@@ -97,7 +133,10 @@ func (rf *Raft) Start(command any) (int, int, bool) {
 	}
 
 	DPrintf(rf.state, "server %v start command %v", rf.me, command)
-	index := rf.logs.Append(command, rf.currentTerm)
+	if command == nil {
+		panic("command is nil")
+	}
+	index := rf.AppendLog(command)
 	rf.WakeAllAppender()
 
 	return index, rf.currentTerm, isLeader
@@ -149,7 +188,7 @@ func (rf *Raft) ticker() {
 // of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 // set commitIndex = N
 func (rf *Raft) updateCommitIndex() {
-	for N := rf.logs.LastIndex(); rf.commitIndex < N; N-- {
+	for N := rf.LastLogIndex(); rf.commitIndex < N; N-- {
 		count := 1
 		for i := range rf.peers {
 			if i == rf.me {
@@ -159,7 +198,7 @@ func (rf *Raft) updateCommitIndex() {
 				count += 1
 			}
 		}
-		if count >= (len(rf.peers)/2+1) && rf.logs[rf.logs.RIndex(N)].Term == rf.currentTerm {
+		if count >= (len(rf.peers)/2+1) && rf.log[N-rf.logStart].Term == rf.currentTerm {
 			rf.commitIndex = N
 			rf.applyCond.Signal()
 			DPrintf(rf.state, "server %v update commit index to %v", rf.me, rf.commitIndex)
@@ -189,7 +228,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		applyCh:        applyCh,
 		currentTerm:    0,
 		votedFor:       -1,
-		logs:           Logs{},
 		state:          Follower,
 		commitIndex:    0,
 		lastApplied:    0,
@@ -197,8 +235,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		heartbeatTimer: time.NewTimer(50 * time.Millisecond),
 	}
 
-	rf.logs.New()
-	rf.nextIndex = fillSlice(len(peers), rf.logs.LastIndex()+1)
+	rf.NewLog()
+	rf.nextIndex = fillSlice(len(peers), rf.LastLogIndex()+1)
 	rf.matchIndex = fillSlice(len(peers), 0)
 
 	rf.applyCond = sync.NewCond(&rf.mu)
