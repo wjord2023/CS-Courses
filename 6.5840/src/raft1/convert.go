@@ -1,0 +1,69 @@
+package raft
+
+func (rf *Raft) convertToFollower(term int) {
+	DPrintf(rf.state, "[term %d] server %v convert to follower", rf.currentTerm, rf.me)
+	rf.currentTerm = term
+	rf.votedFor = -1
+	rf.persist()
+
+	rf.state = Follower
+}
+
+func (rf *Raft) convertToLeader() {
+	DPrintf(rf.state, "[term %d] server %v convert to leader", rf.currentTerm, rf.me)
+
+	rf.state = Leader
+	rf.nextIndex = fillSlice(len(rf.peers), rf.logs.LastIndex()+1)
+	rf.matchIndex = fillSlice(len(rf.peers), 0)
+	rf.logs.Append(nil, rf.currentTerm)
+	// rf.writeVotedFor(-1)
+	rf.WakeAllAppender()
+}
+
+func (rf *Raft) convertToCondidate() {
+	DPrintf(rf.state, "[term %d] server %v convert to candidate", rf.currentTerm, rf.me)
+	rf.state = Candidate
+	rf.writeCurrentTerm(rf.currentTerm + 1)
+
+	// start election
+	go rf.startElection()
+}
+
+func (rf *Raft) startElection() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.writeVotedFor(rf.me)
+
+	numVotes := 1
+
+	for server := range rf.peers {
+		if server == rf.me {
+			continue
+		}
+
+		go func(server int) {
+			rf.mu.Lock()
+			args := rf.genRequestVoteArgs()
+			reply := &RequestVoteReply{}
+			rf.mu.Unlock()
+
+			ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+			if ok {
+				rf.mu.Lock()
+				if reply.Term > rf.currentTerm {
+					rf.convertToFollower(reply.Term)
+					rf.mu.Unlock()
+					return
+				}
+				if reply.VoteGranted {
+					numVotes += 1
+					if numVotes >= (len(rf.peers)/2 + 1) {
+						rf.convertToLeader()
+						numVotes = -99 // prevent double conversion
+					}
+				}
+				rf.mu.Unlock()
+			}
+		}(server)
+	}
+}

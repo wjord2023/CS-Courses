@@ -3,9 +3,9 @@ package raft
 import "log"
 
 // Debugging
-const Debug = false
+const Debug = true
 
-func DPrintf(state ServerState, format string, a ...interface{}) {
+func DPrintf(state ServerState, format string, a ...any) {
 	if Debug {
 		if state == Leader {
 			format = "\033[31m[Leader]\033[0m  " + format
