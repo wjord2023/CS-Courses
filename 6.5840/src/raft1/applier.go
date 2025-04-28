@@ -24,3 +24,27 @@ func (rf *Raft) applier() {
 		rf.applyCh <- applyMag
 	}
 }
+
+// If there exists an N such that N > commitIndex, a majority
+// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
+// set commitIndex = N
+func (rf *Raft) updateCommitIndex() {
+	for N := rf.LastLogIndex(); rf.commitIndex < N; N-- {
+		count := 1
+		for i := range rf.peers {
+			if i == rf.me {
+				continue
+			}
+			if rf.matchIndex[i] >= N {
+				count += 1
+			}
+		}
+		if count >= (len(rf.peers)/2+1) && rf.log[N-rf.logStart].Term == rf.currentTerm {
+			rf.commitIndex = N
+			rf.applyCond.Signal()
+			DPrintf(rf.state, "server %v update commit index to %v", rf.me, rf.commitIndex)
+			rf.broadcastHeartBeat()
+			return
+		}
+	}
+}

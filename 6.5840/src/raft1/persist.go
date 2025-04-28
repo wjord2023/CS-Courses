@@ -27,12 +27,15 @@ func (rf *Raft) persist() {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.logStart)
 	raftstate := w.Bytes()
 	rf.persister.Save(raftstate, rf.persister.ReadSnapshot())
 }
 
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	DPrintf(rf.state, "server %v read persist", rf.me)
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
@@ -55,14 +58,18 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var log []Entries
+	var logStart int
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
-		d.Decode(&log) != nil {
+		d.Decode(&log) != nil ||
+		d.Decode(&logStart) != nil {
 		panic("readPersist failed")
 	} else {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
-		rf.log = log
+		rf.log = make([]Entries, 0)
+		rf.log = append(rf.log, log...)
+		rf.logStart = logStart
 	}
 }
 

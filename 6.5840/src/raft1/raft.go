@@ -72,34 +72,6 @@ type Raft struct {
 	heartbeatTimer *time.Timer
 }
 
-func (rf *Raft) LastLogIndex() int {
-	return rf.logStart + len(rf.log) - 1
-}
-
-func (rf *Raft) LastLogTerm() int {
-	return rf.log[len(rf.log)-1].Term
-}
-
-func (rf *Raft) NewLog() {
-	rf.log = []Entries{{nil, -1, 0}}
-	rf.logStart = 0
-}
-
-func (rf *Raft) AppendLog(command any) int {
-	var index int
-	if command == nil {
-		index = rf.LastCommandIndex() // no-op command don't update command index
-	} else {
-		index = rf.LastCommandIndex() + 1
-	}
-	rf.log = append(rf.log, Entries{command, rf.currentTerm, index})
-	return index
-}
-
-func (rf *Raft) LastCommandIndex() int {
-	return rf.log[len(rf.log)-1].Index
-}
-
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
@@ -152,6 +124,9 @@ func (rf *Raft) Start(command any) (int, int, bool) {
 // confusing debug output. any goroutine with a long-running loop
 // should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
+	rf.mu.Lock()
+	DPrintf(rf.state, "server %v killed", rf.me)
+	rf.mu.Unlock()
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 }
@@ -184,30 +159,6 @@ func (rf *Raft) ticker() {
 	}
 }
 
-// If there exists an N such that N > commitIndex, a majority
-// of matchIndex[i] ≥ N, and log[N].term == currentTerm:
-// set commitIndex = N
-func (rf *Raft) updateCommitIndex() {
-	for N := rf.LastLogIndex(); rf.commitIndex < N; N-- {
-		count := 1
-		for i := range rf.peers {
-			if i == rf.me {
-				continue
-			}
-			if rf.matchIndex[i] >= N {
-				count += 1
-			}
-		}
-		if count >= (len(rf.peers)/2+1) && rf.log[N-rf.logStart].Term == rf.currentTerm {
-			rf.commitIndex = N
-			rf.applyCond.Signal()
-			DPrintf(rf.state, "server %v update commit index to %v", rf.me, rf.commitIndex)
-			rf.broadcastHeartBeat()
-			return
-		}
-	}
-}
-
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -220,22 +171,28 @@ func (rf *Raft) updateCommitIndex() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg,
 ) raftapi.Raft {
+	DPrintf(Follower, "server %v make", me)
 	// Your initialization code here (3A, 3B, 3C).
 	rf := &Raft{
 		peers:          peers,
 		persister:      persister,
 		me:             me,
+		dead:           0,
 		applyCh:        applyCh,
 		currentTerm:    0,
 		votedFor:       -1,
 		state:          Follower,
 		commitIndex:    0,
-		lastApplied:    0,
 		electionTimer:  time.NewTimer(time.Duration(50+rand.Int63()%300) * time.Millisecond),
+		lastApplied:    0,
 		heartbeatTimer: time.NewTimer(50 * time.Millisecond),
 	}
 
 	rf.NewLog()
+
+	// initialize from state persisted before a crash
+	rf.readPersist(persister.ReadRaftState())
+
 	rf.nextIndex = fillSlice(len(peers), rf.LastLogIndex()+1)
 	rf.matchIndex = fillSlice(len(peers), 0)
 
@@ -247,9 +204,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 			go rf.appender(server)
 		}
 	}
-
-	// initialize from state persisted before a crash
-	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
 	go rf.ticker()

@@ -36,18 +36,23 @@ func (rf *Raft) WakeAllAppender() {
 }
 
 func (rf *Raft) appendOnce(server int) {
-	rf.mu.RLock()
+	rf.mu.Lock()
 	if rf.state != Leader {
-		rf.mu.RUnlock()
+		rf.mu.Unlock()
 		return
 	}
 
 	args := rf.genAppendEntriesArgs(server)
 	reply := &AppendEntriesReply{}
+	rf.mu.Unlock()
 
-	rf.mu.RUnlock()
 	if rf.sendAppendEntries(server, args, reply) {
 		rf.mu.Lock()
+		if rf.state != Leader || rf.currentTerm != args.Term {
+			rf.mu.Unlock()
+			return
+		}
+
 		if reply.Term > rf.currentTerm {
 			rf.convertToFollower(reply.Term)
 			rf.mu.Unlock()
@@ -55,38 +60,37 @@ func (rf *Raft) appendOnce(server int) {
 		}
 
 		if reply.Success {
-			if args.Entries != nil {
-				rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
-				rf.nextIndex[server] = rf.matchIndex[server] + 1
+			rf.matchIndex[server] = args.PrevLogIndex + len(args.Entries)
+			rf.nextIndex[server] = rf.matchIndex[server] + 1
 
-				DPrintf(rf.state, "server %v send append entries to %v success", rf.me, server)
-				rf.updateCommitIndex()
-			}
+			rf.updateCommitIndex()
 		} else {
-			rf.quickUpdateNextIndex(server, reply)
+			if reply.Confict {
+				// rf.quickUpdateNextIndex(server, reply.XTerm, reply.XIndex, reply.XLen)
+				rf.quickUpdateNextIndex(server, reply.XTerm, reply.XIndex, reply.XLen)
+				// rf.nextIndex[server] = max(rf.nextIndex[server], rf.matchIndex[server]+1)
+			}
 		}
 		rf.mu.Unlock()
 	}
 }
 
-func (rf *Raft) quickUpdateNextIndex(server int, reply *AppendEntriesReply) {
-	if reply.XTerm == -1 && reply.XIndex == -1 {
-		rf.nextIndex[server] = reply.XLen
-		return
+func (rf *Raft) quickUpdateNextIndex(server int, xterm int, xindex int, xlen int) {
+	defer DPrintf(rf.state, "server %v quick update next index %v", rf.me, rf.nextIndex)
+	if xterm == -1 && xindex == -1 {
+		rf.nextIndex[server] = xlen
 	}
 
-	leaderHasXterm := false
-	for i := rf.PrevLogIndex(server); i >= 0; i-- {
-		if rf.log[i-rf.logStart].Term == reply.XTerm {
+	for i := min(rf.PrevLogIndex(server), rf.LastLogIndex()); i >= rf.logStart; i-- {
+		if rf.log[i-rf.logStart].Term == xterm {
 			rf.nextIndex[server] = i + 1
-			leaderHasXterm = true
+			return
+		} else if rf.log[i-rf.logStart].Term < xterm {
 			break
 		}
 	}
 
-	if !leaderHasXterm {
-		rf.nextIndex[server] = reply.XIndex
-	}
+	rf.nextIndex[server] = max(min(xindex, rf.LastLogIndex()+1), rf.logStart)
 }
 
 func (rf *Raft) broadcastHeartBeat() {
@@ -96,20 +100,6 @@ func (rf *Raft) broadcastHeartBeat() {
 
 	for server := range rf.peers {
 		if server != rf.me {
-			// 	go func(server int) {
-			// 		rf.mu.RLock()
-			// 		args := AppendEntriesArgs{
-			// 			rf.currentTerm,
-			// 			rf.PrevLogIndex(server),
-			// 			rf.PrevLogTerm(server),
-			// 			nil,
-			// 			rf.commitIndex,
-			// 		}
-			// 		reply := AppendEntriesReply{}
-			// 		rf.mu.RUnlock()
-			// 		rf.sendAppendEntries(server, &args, &reply)
-			// 	}(server)
-			// }
 			go rf.appendOnce(server)
 		}
 	}

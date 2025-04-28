@@ -28,9 +28,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	reply.Term = rf.currentTerm
-	if args.Term > rf.currentTerm {
-		rf.convertToFollower(args.Term)
-	}
 
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
@@ -38,10 +35,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && rf.candidateLogUptodate(args) {
+	if args.Term == rf.currentTerm && rf.votedFor != -1 && rf.votedFor != args.CandidateId {
+		reply.VoteGranted = false
+		return
+	}
+
+	if args.Term > rf.currentTerm {
+		rf.convertToFollower(args.Term)
+	}
+
+	if rf.candidateLogUptodate(args) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 		rf.electionTimerReset()
+		rf.persist()
 	} else {
 		reply.VoteGranted = false
 	}
@@ -117,11 +124,8 @@ func (rf *Raft) genAppendEntriesArgs(server int) *AppendEntriesArgs {
 		LeaderCommit: rf.commitIndex,
 	}
 
-	if rf.LastLogIndex() >= rf.nextIndex[server] {
-		args.Entries = rf.log[args.PrevLogIndex+1-rf.logStart:]
-	} else {
-		args.Entries = nil
-	}
+	args.Entries = make([]Entries, 0)
+	args.Entries = append(args.Entries, rf.log[args.PrevLogIndex+1-rf.logStart:]...)
 
 	return args
 }
@@ -130,20 +134,22 @@ type AppendEntriesReply struct {
 	Term    int  // currentTerm, for leader to update itself
 	Success bool // true if follower contained entry matching prevLogIndex and prevLogTerm
 
-	XTerm  int // term in the conflicting entry (if any)
-	XIndex int // index of first entry with that term (if any)
-	XLen   int // log length
+	Confict bool
+	XTerm   int // term in the conflicting entry (if any)
+	XIndex  int // index of first entry with that term (if any)
+	XLen    int // log length
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	reply.Term, reply.Success = rf.currentTerm, true
+	reply.Term = rf.currentTerm
+	reply.Success = false
+	reply.Confict = false
 
 	//  Reply false if term < currentTerm (§5.1)
 	if rf.currentTerm > args.Term {
-		reply.Success = false
 		return
 	}
 
@@ -158,7 +164,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// Reply false if log doesn’t contain an entry at prevLogIndex
 	// whose term matches prevLogTerm (§5.3)
 	if args.PrevLogIndex > rf.LastLogIndex() {
-		reply.Success = false
+		reply.Confict = true
 		reply.XTerm = -1
 		reply.XIndex = -1
 		reply.XLen = rf.LastLogIndex() + 1
@@ -167,22 +173,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	term := rf.log[args.PrevLogIndex-rf.logStart].Term
 	if term != args.PrevLogTerm {
-		reply.Success = false
+		reply.Confict = true
 		reply.XTerm = term
-		for i, log := range rf.log {
-			if log.Term == term {
-				reply.XIndex = i
+		index := rf.logStart
+		for i := args.PrevLogIndex - 1 - rf.logStart; i >= rf.logStart; i-- {
+			if rf.log[i].Term != term {
+				index = i + 1 + rf.logStart
 				break
 			}
 		}
+		reply.XIndex = index
 		reply.XLen = rf.LastLogIndex() + 1
 		return
 	}
 
-	if args.Entries != nil {
-		rf.log = rf.log[:args.PrevLogIndex+1-rf.logStart]
-		rf.log = append(rf.log, args.Entries...)
+	// rf.log = rf.log[:args.PrevLogIndex+1-rf.logStart]
+	// rf.log = append(rf.log, args.Entries...)
+	start := args.PrevLogIndex + 1 - rf.logStart
+	for i, e := range args.Entries {
+		if start+i >= len(rf.log) || rf.log[start+i].Term != e.Term {
+			rf.log = append(rf.log[:start+i], args.Entries[i:]...)
+			DPrintf(rf.state, "server %v append entries %v in index %d", rf.me, args.Entries, args.PrevLogIndex+1)
+			break
+		}
 	}
+	rf.persist()
 
 	if args.LeaderCommit > rf.commitIndex {
 		lastNewEntryIndex := rf.LastLogIndex()
@@ -193,6 +208,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.applyCond.Signal()
 		}
 	}
+	reply.Term, reply.Success = rf.currentTerm, true
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
@@ -202,10 +218,19 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 
 type InstallSnapshotArgs struct {
 	Term              int    // leader’s term
-	LeaderId          int    // so follower can redirect clients
 	LastIncludedIndex int    // snapshot replaces all entries up through and including this index
 	LastIncludedTerm  int    // term of LastIncludedIndex
 	Data              []byte // raw bytes of snapshot chunk, starting at offset
+}
+
+func (rf *Raft) genInstallSnapshotArgs(index int) *InstallSnapshotArgs {
+	args := &InstallSnapshotArgs{
+		Term:              rf.currentTerm,
+		LastIncludedIndex: index,
+		LastIncludedTerm:  rf.log[index-rf.logStart].Term,
+		Data:              rf.persister.ReadSnapshot(),
+	}
+	return args
 }
 
 type InstallSnapshotReply struct {
@@ -221,15 +246,35 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 		return
 	}
 
+	if args.Term > rf.currentTerm {
+		rf.convertToFollower(args.Term)
+	} else if args.Term == rf.currentTerm && rf.state == Candidate {
+		rf.convertToFollower(args.Term)
+	}
+
+	rf.electionTimerReset()
+
+	if rf.logStart > args.LastIncludedIndex {
+		return
+	}
+
 	// Save snapshot file, discard any existing or partial snapshot
 	// with a smaller index
 	if rf.LastLogIndex() >= args.LastIncludedIndex && rf.log[args.LastIncludedIndex].Term == args.LastIncludedTerm {
 		rf.Snapshot(args.LastIncludedIndex, args.Data)
 		return
-	} else {
-		rf.Snapshot(rf.LastLogIndex(), args.Data)
 	}
+
+	rf.NewLog()
+	rf.logStart = args.LastIncludedIndex + 1
+	rf.lastApplied = args.LastIncludedIndex
+	rf.commitIndex = args.LastIncludedIndex
 
 	applyMsg := raftapi.ApplyMsg{SnapshotValid: true, Snapshot: args.Data, SnapshotTerm: args.LastIncludedTerm, SnapshotIndex: args.LastIncludedIndex}
 	rf.applyCh <- applyMsg
+}
+
+func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
 }
