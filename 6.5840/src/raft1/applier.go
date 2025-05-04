@@ -1,35 +1,58 @@
 package raft
 
-import "6.5840/raftapi"
+import (
+	"6.5840/raftapi"
+)
 
 func (rf *Raft) applier() {
-	rf.applyCond.L.Lock()
-	defer rf.applyCond.L.Unlock()
-
 	for !rf.killed() {
+		rf.mu.Lock()
 		for !(rf.commitIndex > rf.lastApplied) {
 			rf.applyCond.Wait()
 		}
-		rf.lastApplied += 1
-		command := rf.log[rf.lastApplied-rf.logStart].Command
-		if command == nil {
-			continue
+		if rf.lastApplied < rf.log.FirstIndex() {
+			rf.applySnapshotCommand()
+		} else {
+			rf.applyLogCommand()
 		}
-		index := rf.log[rf.lastApplied-rf.logStart].Index
-		applyMag := raftapi.ApplyMsg{
-			CommandValid: true,
-			Command:      command,
-			CommandIndex: index,
-		}
-		rf.applyCh <- applyMag
 	}
+}
+
+func (rf *Raft) applyLogCommand() {
+	rf.DPrintf("apply log to index %d\n", rf.lastApplied)
+	rf.lastApplied += 1
+	command := rf.log.Get(rf.lastApplied).Command
+	if command == nil {
+		return
+	}
+	index := rf.log.Get(rf.lastApplied).Index
+	applyMag := raftapi.ApplyMsg{
+		CommandValid: true,
+		Command:      command,
+		CommandIndex: index,
+	}
+	rf.mu.Unlock()
+	rf.applyCh <- applyMag
+}
+
+func (rf *Raft) applySnapshotCommand() {
+	rf.DPrintf("apply snapshot to index %d\n", rf.log.FirstIndex())
+	rf.lastApplied = rf.log.FirstIndex()
+	applyMsg := raftapi.ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      rf.persister.ReadSnapshot(),
+		SnapshotTerm:  rf.log.FirstTerm(),
+		SnapshotIndex: rf.log.FirstIndex(),
+	}
+	rf.mu.Unlock()
+	rf.applyCh <- applyMsg
 }
 
 // If there exists an N such that N > commitIndex, a majority
 // of matchIndex[i] ≥ N, and log[N].term == currentTerm:
 // set commitIndex = N
 func (rf *Raft) updateCommitIndex() {
-	for N := rf.LastLogIndex(); rf.commitIndex < N; N-- {
+	for N := rf.log.LastIndex(); max(rf.commitIndex, rf.log.FirstIndex()) < N; N-- {
 		count := 1
 		for i := range rf.peers {
 			if i == rf.me {
@@ -39,10 +62,10 @@ func (rf *Raft) updateCommitIndex() {
 				count += 1
 			}
 		}
-		if count >= (len(rf.peers)/2+1) && rf.log[N-rf.logStart].Term == rf.currentTerm {
+		if count >= (len(rf.peers)/2+1) && rf.log.Get(N).Term == rf.currentTerm {
 			rf.commitIndex = N
+			rf.DPrintf("update commit index to %d\n", rf.commitIndex)
 			rf.applyCond.Signal()
-			DPrintf(rf.state, "server %v update commit index to %v", rf.me, rf.commitIndex)
 			rf.broadcastHeartBeat()
 			return
 		}

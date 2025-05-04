@@ -1,7 +1,5 @@
 package raft
 
-import "6.5840/raftapi"
-
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
@@ -47,20 +45,20 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.candidateLogUptodate(args) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
-		rf.electionTimerReset()
 		rf.persist()
+		rf.electionTimerReset()
 	} else {
 		reply.VoteGranted = false
 	}
 }
 
 func (rf *Raft) candidateLogUptodate(args *RequestVoteArgs) bool {
-	if rf.LastLogTerm() < args.LastLogTerm {
+	if rf.log.LastTerm() < args.LastLogTerm {
 		return true
-	} else if rf.LastLogTerm() > args.LastLogTerm {
+	} else if rf.log.LastTerm() > args.LastLogTerm {
 		return false
 	} else {
-		return rf.LastLogIndex() <= args.LastLogIndex
+		return rf.log.LastIndex() <= args.LastLogIndex
 	}
 }
 
@@ -68,8 +66,8 @@ func (rf *Raft) genRequestVoteArgs() *RequestVoteArgs {
 	args := &RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.me,
-		LastLogIndex: rf.LastLogIndex(),
-		LastLogTerm:  rf.LastLogTerm(),
+		LastLogIndex: rf.log.LastIndex(),
+		LastLogTerm:  rf.log.LastTerm(),
 	}
 	return args
 }
@@ -101,10 +99,6 @@ func (rf *Raft) genRequestVoteArgs() *RequestVoteArgs {
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
 
 type AppendEntriesArgs struct {
 	Term         int // leader’s term
@@ -125,7 +119,7 @@ func (rf *Raft) genAppendEntriesArgs(server int) *AppendEntriesArgs {
 	}
 
 	args.Entries = make([]Entries, 0)
-	args.Entries = append(args.Entries, rf.log[args.PrevLogIndex+1-rf.logStart:]...)
+	args.Entries = append(args.Entries, rf.log.GetSlice(args.PrevLogIndex+1, rf.log.LastIndex()+1)...)
 
 	return args
 }
@@ -161,59 +155,57 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.electionTimerReset()
 
-	// Reply false if log doesn’t contain an entry at prevLogIndex
-	// whose term matches prevLogTerm (§5.3)
-	if args.PrevLogIndex > rf.LastLogIndex() {
-		reply.Confict = true
-		reply.XTerm = -1
-		reply.XIndex = -1
-		reply.XLen = rf.LastLogIndex() + 1
+	if args.PrevLogIndex < rf.log.FirstIndex() {
+		rf.DPrintf("prev log index %d < first index %d\n", args.PrevLogIndex, rf.log.FirstIndex())
 		return
 	}
 
-	term := rf.log[args.PrevLogIndex-rf.logStart].Term
+	// Reply false if log doesn’t contain an entry at prevLogIndex
+	// whose term matches prevLogTerm (§5.3)
+	if args.PrevLogIndex > rf.log.LastIndex() {
+		reply.Confict = true
+		reply.XTerm = -1
+		reply.XIndex = -1
+		reply.XLen = rf.log.LastIndex() + 1
+		return
+	}
+
+	term := rf.log.Get(args.PrevLogIndex).Term
 	if term != args.PrevLogTerm {
 		reply.Confict = true
 		reply.XTerm = term
-		index := rf.logStart
-		for i := args.PrevLogIndex - 1 - rf.logStart; i >= rf.logStart; i-- {
+		index := rf.log.FirstIndex()
+		for i := args.PrevLogIndex - 1 - rf.log.FirstIndex(); i >= rf.log.FirstIndex(); i-- {
 			if rf.log[i].Term != term {
-				index = i + 1 + rf.logStart
+				index = i + 1 + rf.log.FirstIndex()
 				break
 			}
 		}
 		reply.XIndex = index
-		reply.XLen = rf.LastLogIndex() + 1
+		reply.XLen = rf.log.LastIndex() + 1
 		return
 	}
 
-	// rf.log = rf.log[:args.PrevLogIndex+1-rf.logStart]
-	// rf.log = append(rf.log, args.Entries...)
-	start := args.PrevLogIndex + 1 - rf.logStart
+	// rf.log = append(rf.log.GetSlice(rf.log.FirstIndex(), args.PrevLogIndex+1), args.Entries...)
+	start := args.PrevLogIndex + 1 - rf.log.FirstIndex()
 	for i, e := range args.Entries {
 		if start+i >= len(rf.log) || rf.log[start+i].Term != e.Term {
 			rf.log = append(rf.log[:start+i], args.Entries[i:]...)
-			DPrintf(rf.state, "server %v append entries %v in index %d", rf.me, args.Entries, args.PrevLogIndex+1)
+			rf.persist()
 			break
 		}
 	}
-	rf.persist()
 
 	if args.LeaderCommit > rf.commitIndex {
-		lastNewEntryIndex := rf.LastLogIndex()
+		lastNewEntryIndex := rf.log.LastIndex()
 		newCommitIndex := min(args.LeaderCommit, lastNewEntryIndex)
 		if rf.commitIndex < newCommitIndex {
 			rf.commitIndex = newCommitIndex
-			DPrintf(rf.state, "server %v update commit index to %v", rf.me, rf.commitIndex)
 			rf.applyCond.Signal()
+			rf.DPrintf("update commit index to %d\n", rf.commitIndex)
 		}
 	}
 	reply.Term, reply.Success = rf.currentTerm, true
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
 }
 
 type InstallSnapshotArgs struct {
@@ -223,11 +215,11 @@ type InstallSnapshotArgs struct {
 	Data              []byte // raw bytes of snapshot chunk, starting at offset
 }
 
-func (rf *Raft) genInstallSnapshotArgs(index int) *InstallSnapshotArgs {
+func (rf *Raft) genInstallSnapshotArgs() *InstallSnapshotArgs {
 	args := &InstallSnapshotArgs{
 		Term:              rf.currentTerm,
-		LastIncludedIndex: index,
-		LastIncludedTerm:  rf.log[index-rf.logStart].Term,
+		LastIncludedIndex: rf.log.FirstIndex(),
+		LastIncludedTerm:  rf.log.FirstTerm(),
 		Data:              rf.persister.ReadSnapshot(),
 	}
 	return args
@@ -240,6 +232,7 @@ type InstallSnapshotReply struct {
 func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
 	reply.Term = rf.currentTerm
 	// Reply immediately if term < currentTerm
 	if args.Term < rf.currentTerm {
@@ -254,27 +247,28 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.electionTimerReset()
 
-	if rf.logStart > args.LastIncludedIndex {
+	if rf.commitIndex >= args.LastIncludedIndex {
 		return
 	}
 
-	// Save snapshot file, discard any existing or partial snapshot
-	// with a smaller index
-	if rf.LastLogIndex() >= args.LastIncludedIndex && rf.log[args.LastIncludedIndex].Term == args.LastIncludedTerm {
-		rf.Snapshot(args.LastIncludedIndex, args.Data)
-		return
-	}
+	rf.RenewLog(args.LastIncludedIndex, args.LastIncludedTerm)
+	rf.persister.Save(rf.encodeState(), args.Data)
 
-	rf.NewLog()
-	rf.logStart = args.LastIncludedIndex + 1
-	rf.lastApplied = args.LastIncludedIndex
-	rf.commitIndex = args.LastIncludedIndex
+	rf.commitIndex = rf.log.FirstIndex()
+	rf.DPrintf("update commitIndex to %d\n", rf.commitIndex)
+}
 
-	applyMsg := raftapi.ApplyMsg{SnapshotValid: true, Snapshot: args.Data, SnapshotTerm: args.LastIncludedTerm, SnapshotIndex: args.LastIncludedIndex}
-	rf.applyCh <- applyMsg
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotArgs, reply *InstallSnapshotReply) bool {
 	ok := rf.peers[server].Call("Raft.InstallSnapshot", args, reply)
+	return ok
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }

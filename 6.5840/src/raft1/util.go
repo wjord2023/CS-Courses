@@ -1,21 +1,13 @@
 package raft
 
-import "log"
+import (
+	"log"
+)
 
 // Debugging
-const Debug = true
 
-func DPrintf(state ServerState, format string, a ...any) {
+func DPrintf(format string, a ...any) {
 	if Debug {
-		if state == Leader {
-			format = "\033[31m[Leader]\033[0m  " + format
-		}
-		if state == Follower {
-			format = "\033[32m[Follower]\033[0m  " + format
-		}
-		if state == Candidate {
-			format = "\033[33m[Candidate]\033[0m  " + format
-		}
 		log.Printf(format, a...)
 	}
 }

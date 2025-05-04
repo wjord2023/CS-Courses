@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const Debug = false
+
 func (rf *Raft) PrevLogIndex(server int) int {
 	return rf.nextIndex[server] - 1
 }
@@ -15,7 +17,7 @@ func (rf *Raft) PrevLogTerm(server int) int {
 	if prevIndex < 0 {
 		panic(fmt.Sprintf("server %d prevIndex %d < 0", server, prevIndex))
 	}
-	return rf.log[prevIndex-rf.logStart].Term
+	return rf.log.Get(prevIndex).Term
 }
 
 func (rf *Raft) electionTimerReset() {
@@ -26,31 +28,35 @@ func (rf *Raft) heartbeatTimerReset() {
 	rf.heartbeatTimer.Reset(50 * time.Millisecond)
 }
 
-func (rf *Raft) LastLogIndex() int {
-	return rf.logStart + len(rf.log) - 1
-}
+func (rf *Raft) DPrintf(format string, a ...any) {
+	if Debug {
+		format = fmt.Sprintf("server %d ", rf.me) + format
 
-func (rf *Raft) LastLogTerm() int {
-	return rf.log[len(rf.log)-1].Term
-}
+		if rf.state == Leader {
+			format = "\033[31m[Leader]\033[0m  " + format
+		}
+		if rf.state == Follower {
+			format = "\033[32m[Follower]\033[0m  " + format
+		}
+		if rf.state == Candidate {
+			format = "\033[33m[Candidate]\033[0m  " + format
+		}
 
-func (rf *Raft) NewLog() {
-	rf.log = []Entries{{nil, -1, 0}}
-	rf.logStart = 0
-}
-
-func (rf *Raft) AppendLog(command any) int {
-	var index int
-	if command == nil {
-		index = rf.LastCommandIndex() // no-op command don't update command index
-	} else {
-		index = rf.LastCommandIndex() + 1
+		fmt.Printf(format, a...)
 	}
-	rf.log = append(rf.log, Entries{command, rf.currentTerm, index})
-	rf.persist()
-	return index
 }
 
-func (rf *Raft) LastCommandIndex() int {
-	return rf.log[len(rf.log)-1].Index
+func (rf *Raft) Shrink(index int) {
+	rf.DPrintf("log before shrink %v\n", rf.log)
+	newL := make([]Entries, 0)
+	newL = append(newL, rf.log[index-rf.log.FirstIndex():]...)
+	rf.log = newL
+	rf.log[0].Command = nil
+	rf.DPrintf("log shrink to %v\n", rf.log)
+}
+
+func (rf *Raft) RenewLog(firstIndex int, firstTerm int) {
+	newL := make(Log, 0)
+	newL = append(newL, Entries{Command: nil, Term: firstTerm, Index: firstIndex})
+	rf.log = newL
 }

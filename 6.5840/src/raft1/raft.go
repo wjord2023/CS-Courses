@@ -29,12 +29,6 @@ const (
 	Leader
 )
 
-type Entries struct {
-	Command any
-	Term    int
-	Index   int // index for apply command
-}
-
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.RWMutex        // Lock to protect shared access to this peer's state
@@ -55,9 +49,7 @@ type Raft struct {
 	// Persistent state on all servers
 	currentTerm int
 	votedFor    int
-
-	log      []Entries
-	logStart int // absolute index of the first log entry
+	log         Log
 
 	// Volatile state on all servers
 	commitIndex int
@@ -104,11 +96,12 @@ func (rf *Raft) Start(command any) (int, int, bool) {
 		return -1, -1, false
 	}
 
-	DPrintf(rf.state, "server %v start command %v", rf.me, command)
+	rf.DPrintf("start command %v\n", command)
 	if command == nil {
 		panic("command is nil")
 	}
-	index := rf.AppendLog(command)
+	index := rf.log.Append(command, rf.currentTerm)
+	rf.persist()
 	rf.WakeAllAppender()
 
 	return index, rf.currentTerm, isLeader
@@ -124,11 +117,11 @@ func (rf *Raft) Start(command any) (int, int, bool) {
 // confusing debug output. any goroutine with a long-running loop
 // should call killed() to check whether it should stop.
 func (rf *Raft) Kill() {
-	rf.mu.Lock()
-	DPrintf(rf.state, "server %v killed", rf.me)
-	rf.mu.Unlock()
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
+	rf.mu.Lock()
+	rf.DPrintf("killed\n")
+	rf.mu.Unlock()
 }
 
 func (rf *Raft) killed() bool {
@@ -171,7 +164,6 @@ func (rf *Raft) ticker() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *tester.Persister, applyCh chan raftapi.ApplyMsg,
 ) raftapi.Raft {
-	DPrintf(Follower, "server %v make", me)
 	// Your initialization code here (3A, 3B, 3C).
 	rf := &Raft{
 		peers:          peers,
@@ -188,12 +180,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		heartbeatTimer: time.NewTimer(50 * time.Millisecond),
 	}
 
-	rf.NewLog()
+	rf.log.Init()
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
-	rf.nextIndex = fillSlice(len(peers), rf.LastLogIndex()+1)
+	rf.nextIndex = fillSlice(len(peers), rf.log.LastIndex()+1)
 	rf.matchIndex = fillSlice(len(peers), 0)
 
 	rf.applyCond = sync.NewCond(&rf.mu)

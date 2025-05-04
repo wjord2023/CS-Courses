@@ -1,7 +1,8 @@
 package raft
 
 func (rf *Raft) convertToFollower(term int) {
-	DPrintf(rf.state, "[term %d] server %v convert to follower", rf.currentTerm, rf.me)
+	defer rf.DPrintf("convert to Follower in term %d\n", rf.currentTerm)
+
 	rf.currentTerm = term
 	rf.votedFor = -1
 	rf.persist()
@@ -10,28 +11,27 @@ func (rf *Raft) convertToFollower(term int) {
 }
 
 func (rf *Raft) convertToLeader() {
-	DPrintf(rf.state, "[term %d] server %v convert to leader", rf.currentTerm, rf.me)
+	defer rf.DPrintf("convert to Leader in term %d\n", rf.currentTerm)
 
 	rf.state = Leader
-	rf.nextIndex = fillSlice(len(rf.peers), rf.LastLogIndex()+1)
+	rf.nextIndex = fillSlice(len(rf.peers), rf.log.LastIndex()+1)
 	rf.matchIndex = fillSlice(len(rf.peers), 0)
-	rf.AppendLog(nil)
+	// rf.AppendLog(nil)
 	rf.WakeAllAppender()
 }
 
 func (rf *Raft) convertToCondidate() {
-	DPrintf(rf.state, "[term %d] server %v convert to candidate", rf.currentTerm, rf.me)
+	defer rf.DPrintf("convert to condidate in term %d\n", rf.currentTerm)
+
 	rf.state = Candidate
 	rf.currentTerm += 1
 	rf.persist()
 
 	// start election
-	go rf.startElection()
+	rf.startElection()
 }
 
 func (rf *Raft) startElection() {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	rf.votedFor = rf.me
 	rf.persist()
 
@@ -47,6 +47,7 @@ func (rf *Raft) startElection() {
 			reply := &RequestVoteReply{}
 			if rf.sendRequestVote(server, args, reply) {
 				rf.mu.Lock()
+				rf.DPrintf("send request vote to %d\n", server)
 				if rf.state != Candidate || rf.currentTerm != args.Term {
 					rf.mu.Unlock()
 					return
