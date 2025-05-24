@@ -12,16 +12,20 @@ const (
 	ErrMaybe = "ErrMaybe"
 
 	// For future kvraft lab
-	ErrWrongLeader = "ErrWrongLeader"
-	ErrWrongGroup  = "ErrWrongGroup"
+	ErrWrongLeader      = "ErrWrongLeader"
+	ErrWrongGroup       = "ErrWrongGroup"
+	ErrLeadershipChange = "ErrLeadershipChange"
+	ErrShutDown         = "ErrShutDown"
 )
 
 type Tversion uint64
 
 type PutArgs struct {
-	Key     string
-	Value   string
-	Version Tversion
+	Key      string
+	Value    string
+	Version  Tversion
+	ClientID string
+	OpID     int
 }
 
 type PutReply struct {
@@ -37,4 +41,3 @@ type GetReply struct {
 	Version Tversion
 	Err     Err
 }
-

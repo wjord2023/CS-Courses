@@ -1,7 +1,11 @@
 package rsm
 
 import (
+	"crypto/rand"
+	"encoding/hex"
+	"strconv"
 	"sync"
+	"time"
 
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labrpc"
@@ -17,7 +21,7 @@ type Op struct {
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
 	Me  int
-	Id  int
+	Id  string
 	Req any
 }
 
@@ -41,6 +45,10 @@ type RSM struct {
 	maxraftstate int // snapshot if log grows this big
 	sm           StateMachine
 	// Your definitions here.
+	chans  map[string]chan any
+	rsmid  string
+	opid   int
+	killed int32
 }
 
 // servers[] contains the ports of the set of
@@ -64,10 +72,16 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		maxraftstate: maxraftstate,
 		applyCh:      make(chan raftapi.ApplyMsg),
 		sm:           sm,
+		chans:        make(map[string]chan any),
+		rsmid:        RandID(8),
+		opid:         0,
 	}
 	if !useRaftStateMachine {
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
+
+	go rsm.Reader()
+
 	return rsm
 }
 
@@ -84,15 +98,97 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 	// is the argument to Submit and id is a unique id for the op.
 
 	// your code here
-	op := Op{Me: rsm.me, Id: 0, Req: req}
-	return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	rsm.mu.Lock()
+	id := ID(rsm.rsmid, rsm.opid)
+	op := Op{Me: rsm.me, Id: id, Req: req}
+	_, term, isLeader := rsm.rf.Start(op)
+	if !isLeader {
+		rsm.mu.Unlock()
+		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
+	}
+	ch := make(chan any)
+	rsm.opid++
+
+	rsm.chans[op.Id] = ch
+	DPrintf("rsm %d Create chan for opid %v", rsm.me, op.Id)
+	rsm.mu.Unlock()
+
+	defer func() {
+		rsm.mu.Lock()
+		close(ch)
+		delete(rsm.chans, op.Id)
+		DPrintf("rsm %d Delete chan for opid %v", rsm.me, op.Id)
+		rsm.mu.Unlock()
+	}()
+
+	for {
+		select {
+		case ret := <-ch:
+			DPrintf("rsm %d Get ret from chan for opid %v", rsm.me, op.Id)
+			return rpc.OK, ret
+		case <-time.After(100 * time.Millisecond):
+			if rsm.isLeadershipChanged(term) {
+				return rpc.ErrWrongLeader, nil
+			}
+			if rsm.Killed() {
+				return rpc.ErrShutDown, nil
+			}
+		}
+	}
+}
+
+func (rsm *RSM) isLeadershipChanged(term int) bool {
+	newTerm, isLeader := rsm.rf.GetState()
+	if !isLeader {
+		return true
+	}
+	if newTerm != term {
+		return true
+	}
+	return false
 }
 
 func (rsm *RSM) Reader() {
-	for {
-		select {
-		case msg := <-rsm.applyCh:
-			ret := rsm.sm.DoOp(msg.Command)
+	for msg := range rsm.applyCh {
+		if msg.CommandValid {
+			op := msg.Command.(Op)
+			ret := rsm.sm.DoOp(op.Req)
+			if op.Me != rsm.me {
+				continue
+			}
+
+			rsm.mu.Lock()
+			ch, ok := rsm.chans[op.Id]
+			rsm.mu.Unlock()
+
+			if ok {
+				ch <- ret
+				DPrintf("rsm %d Send ret to chan for opid %v", rsm.me, op.Id)
+			}
 		}
 	}
+	rsm.Kill()
+}
+
+func (rsm *RSM) Kill() {
+	rsm.mu.Lock()
+	defer rsm.mu.Unlock()
+	rsm.killed = 1
+}
+
+func (rsm *RSM) Killed() bool {
+	rsm.mu.Lock()
+	ret := rsm.killed == 1
+	rsm.mu.Unlock()
+	return ret
+}
+
+func RandID(n int) string {
+	b := make([]byte, n)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+func ID(rsmid string, opid int) string {
+	return rsmid + "-" + strconv.Itoa(opid)
 }

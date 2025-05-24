@@ -32,7 +32,11 @@ func (rf *Raft) applyLogCommand() {
 		CommandIndex: index,
 	}
 	rf.mu.Unlock()
-	rf.applyCh <- applyMag
+	select {
+	case rf.applyCh <- applyMag:
+	case <-rf.stop:
+		close(rf.applyCh)
+	}
 }
 
 func (rf *Raft) applySnapshotCommand() {
@@ -45,7 +49,12 @@ func (rf *Raft) applySnapshotCommand() {
 		SnapshotIndex: rf.log.FirstIndex(),
 	}
 	rf.mu.Unlock()
-	rf.applyCh <- applyMsg
+
+	select {
+	case rf.applyCh <- applyMsg:
+	case <-rf.stop:
+		close(rf.applyCh)
+	}
 }
 
 // If there exists an N such that N > commitIndex, a majority

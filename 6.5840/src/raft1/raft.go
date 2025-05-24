@@ -62,6 +62,8 @@ type Raft struct {
 	state          ServerState
 	electionTimer  *time.Timer
 	heartbeatTimer *time.Timer
+
+	stop chan int
 }
 
 // return currentTerm and whether this server
@@ -120,6 +122,7 @@ func (rf *Raft) Kill() {
 	atomic.StoreInt32(&rf.dead, 1)
 	// Your code here, if desired.
 	rf.mu.Lock()
+	close(rf.stop)
 	rf.DPrintf("killed\n")
 	rf.mu.Unlock()
 }
@@ -178,6 +181,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		electionTimer:  time.NewTimer(time.Duration(50+rand.Int63()%300) * time.Millisecond),
 		lastApplied:    0,
 		heartbeatTimer: time.NewTimer(50 * time.Millisecond),
+		stop:           make(chan int),
 	}
 
 	rf.log.Init()
