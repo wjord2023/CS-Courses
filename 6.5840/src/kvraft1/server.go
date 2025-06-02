@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"bytes"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -70,11 +71,23 @@ func (kv *KVServer) DoOp(req any) any {
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
-	return nil
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	kv.mu.Lock()
+	e.Encode(kv.kvMap)
+	kv.mu.Unlock()
+	return w.Bytes()
 }
 
 func (kv *KVServer) Restore(data []byte) {
 	// Your code here
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	kv.mu.Lock()
+	if d.Decode(&kv.kvMap) != nil {
+		log.Fatalf("failed to decode kvMap in Restore")
+	}
+	kv.mu.Unlock()
 }
 
 func (kv *KVServer) doGet(args *rpc.GetArgs) *rpc.GetReply {

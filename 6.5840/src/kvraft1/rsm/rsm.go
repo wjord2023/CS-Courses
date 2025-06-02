@@ -80,6 +80,11 @@ func MakeRSM(servers []*labrpc.ClientEnd, me int, persister *tester.Persister, m
 		rsm.rf = raft.Make(servers, me, persister, rsm.applyCh)
 	}
 
+	if persister.SnapshotSize() != 0 {
+		DPrintf("rsm %d restoring snapshot", me)
+		rsm.sm.Restore(persister.ReadSnapshot())
+	}
+
 	go rsm.Reader()
 
 	return rsm
@@ -106,25 +111,23 @@ func (rsm *RSM) Submit(req any) (rpc.Err, any) {
 		rsm.mu.Unlock()
 		return rpc.ErrWrongLeader, nil // i'm dead, try another server.
 	}
+	DPrintf("rsm %d submit op %v", rsm.me, op)
 	ch := make(chan any)
 	rsm.opid++
 
 	rsm.chans[op.Id] = ch
-	DPrintf("rsm %d Create chan for opid %v", rsm.me, op.Id)
 	rsm.mu.Unlock()
 
 	defer func() {
 		rsm.mu.Lock()
 		close(ch)
 		delete(rsm.chans, op.Id)
-		DPrintf("rsm %d Delete chan for opid %v", rsm.me, op.Id)
 		rsm.mu.Unlock()
 	}()
 
 	for {
 		select {
 		case ret := <-ch:
-			DPrintf("rsm %d Get ret from chan for opid %v", rsm.me, op.Id)
 			return rpc.OK, ret
 		case <-time.After(100 * time.Millisecond):
 			if rsm.isLeadershipChanged(term) {
@@ -150,9 +153,13 @@ func (rsm *RSM) isLeadershipChanged(term int) bool {
 
 func (rsm *RSM) Reader() {
 	for msg := range rsm.applyCh {
+		DPrintf("rsm %d read msg %v", rsm.me, msg)
 		if msg.CommandValid {
 			op := msg.Command.(Op)
 			ret := rsm.sm.DoOp(op.Req)
+
+			go rsm.Snapshoter(msg)
+
 			if op.Me != rsm.me {
 				continue
 			}
@@ -163,11 +170,20 @@ func (rsm *RSM) Reader() {
 
 			if ok {
 				ch <- ret
-				DPrintf("rsm %d Send ret to chan for opid %v", rsm.me, op.Id)
 			}
+
+		} else if msg.SnapshotValid {
+			rsm.sm.Restore(msg.Snapshot)
 		}
 	}
 	rsm.Kill()
+}
+
+func (rsm *RSM) Snapshoter(msg raftapi.ApplyMsg) {
+	if rsm.maxraftstate != -1 && rsm.rf.PersistBytes() > rsm.maxraftstate {
+		DPrintf("rsm %d snapshotting, raft state size %d", rsm.me, rsm.rf.PersistBytes())
+		rsm.rf.Snapshot(msg.CommandIndex, rsm.sm.Snapshot())
+	}
 }
 
 func (rsm *RSM) Kill() {

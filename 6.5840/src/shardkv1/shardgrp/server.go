@@ -1,17 +1,24 @@
 package shardgrp
 
 import (
+	"log"
+	"sync"
 	"sync/atomic"
-
 
 	"6.5840/kvraft1/rsm"
 	"6.5840/kvsrv1/rpc"
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/shardkv1/shardgrp/shardrpc"
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
+type Key string
+
+type Value struct {
+	Value   string
+	Version rpc.Tversion
+}
 
 type KVServer struct {
 	me   int
@@ -20,14 +27,94 @@ type KVServer struct {
 	gid  tester.Tgid
 
 	// Your code here
+	mu       sync.Mutex
+	kvMap    map[Key]Value
+	opRecord map[string][]int // map[clientID]opID
 }
-
 
 func (kv *KVServer) DoOp(req any) any {
 	// Your code here
+	switch req := req.(type) {
+	case rpc.GetArgs:
+		return kv.doGet(&req)
+	case rpc.PutArgs:
+		return kv.doPut(&req)
+	default:
+		log.Fatalf("unknown type %T", req)
+	}
 	return nil
 }
 
+func (kv *KVServer) appendOpRecord(clientID string, opID int) {
+	if _, ok := kv.opRecord[clientID]; !ok {
+		kv.opRecord[clientID] = make([]int, 0)
+	}
+	kv.opRecord[clientID] = append(kv.opRecord[clientID], opID)
+}
+
+func (kv *KVServer) checkOpRecord(clientID string, opID int) bool {
+	opids, ok := kv.opRecord[clientID]
+	if !ok {
+		return false
+	}
+	for i := len(opids) - 1; i >= 0; i-- {
+		if opids[i] == opID {
+			return true
+		}
+	}
+	return false
+}
+
+func (kv *KVServer) doGet(args *rpc.GetArgs) *rpc.GetReply {
+	k := (Key)(args.Key)
+
+	kv.mu.Lock()
+	v, ok := kv.kvMap[k]
+	kv.mu.Unlock()
+
+	if !ok {
+		return &rpc.GetReply{Err: rpc.ErrNoKey}
+	}
+	return &rpc.GetReply{Value: v.Value, Version: v.Version, Err: rpc.OK}
+}
+
+func (kv *KVServer) doPut(args *rpc.PutArgs) *rpc.PutReply {
+	k := (Key)(args.Key)
+
+	kv.mu.Lock()
+	if kv.checkOpRecord(args.ClientID, args.OpID) {
+		kv.mu.Unlock()
+		return &rpc.PutReply{Err: rpc.OK}
+	}
+
+	v, ok := kv.kvMap[k]
+
+	if !ok {
+		if args.Version == 0 {
+			kv.kvMap[k] = Value{Value: args.Value, Version: 1}
+			kv.appendOpRecord(args.ClientID, args.OpID)
+			kv.mu.Unlock()
+
+			return &rpc.PutReply{Err: rpc.OK}
+		} else {
+			kv.mu.Unlock()
+			return &rpc.PutReply{Err: rpc.ErrNoKey}
+		}
+	}
+
+	version := v.Version
+
+	if version == args.Version {
+		kv.kvMap[k] = Value{Value: args.Value, Version: version + 1}
+		kv.appendOpRecord(args.ClientID, args.OpID)
+		kv.mu.Unlock()
+
+		return &rpc.PutReply{Err: rpc.OK}
+	} else {
+		kv.mu.Unlock()
+		return &rpc.PutReply{Err: rpc.ErrVersion}
+	}
+}
 
 func (kv *KVServer) Snapshot() []byte {
 	// Your code here
