@@ -83,10 +83,13 @@ func (kv *KVServer) Restore(data []byte) {
 	// Your code here
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
+
+	kvmap := make(map[Key]Value)
 	kv.mu.Lock()
-	if d.Decode(&kv.kvMap) != nil {
+	if d.Decode(&kvmap) != nil {
 		log.Fatalf("failed to decode kvMap in Restore")
 	}
+	kv.kvMap = kvmap
 	kv.mu.Unlock()
 }
 

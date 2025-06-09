@@ -5,9 +5,13 @@ package shardctrler
 //
 
 import (
+	"reflect"
+
 	kvsrv "6.5840/kvsrv1"
 	kvtest "6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
+	"6.5840/shardkv1/shardgrp"
+	"6.5840/shardkv1/shardutils"
 	tester "6.5840/tester1"
 )
 
@@ -27,6 +31,7 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 	srv := tester.ServerName(tester.GRP0, 0)
 	sck.IKVClerk = kvsrv.MakeClerk(clnt, srv)
 	// Your code here.
+	shardutils.DPrintf("shardctrler", "MakeShardCtrler: %s", srv)
 	return sck
 }
 
@@ -34,6 +39,13 @@ func MakeShardCtrler(clnt *tester.Clnt) *ShardCtrler {
 // controller. In part A, this method doesn't need to do anything. In
 // B and C, this method implements recovery.
 func (sck *ShardCtrler) InitController() {
+	shardutils.DPrintf("shardctrler", "InitController")
+	curr := sck.Query()
+	next := sck.QueryNext()
+	if next.Num > curr.Num {
+		shardutils.DPrintf("shardctrler", "InitController: ChangeConfig from %s to %s", curr.String(), next.String())
+		sck.ChangeConfigTo(next)
+	}
 }
 
 // Called once by the tester to supply the first configuration.  You
@@ -44,6 +56,7 @@ func (sck *ShardCtrler) InitController() {
 func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 	// Your code here
 	sck.Put("cfg", cfg.String(), 0)
+	sck.Put("nxt", cfg.String(), 0)
 }
 
 // Called by the tester to ask the controller to change the
@@ -52,11 +65,43 @@ func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 // controller.
 func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	// Your code here.
+	_, version, _ := sck.Get("nxt")
+	sck.Put("nxt", new.String(), version)
+
+	if new.Num <= sck.Query().Num {
+		return // Ignore if the new config is not newer than the current one
+	}
+
+	old := sck.Query()
+	shardutils.DPrintf("shardctrler", "ChangeConfig from %s To %s", old.String(), new.String())
+	for i := range shardcfg.NShards {
+		oldGid, oldSrvs, oldOk := old.GidServers(shardcfg.Tshid(i))
+		newGid, newSrvs, newOk := new.GidServers(shardcfg.Tshid(i))
+		if !oldOk || !newOk {
+			panic("ChangeConfigTo: shard not found in config")
+		}
+		if oldGid != newGid || !reflect.DeepEqual(oldSrvs, newSrvs) {
+			oldClerk := shardgrp.ShardgrpClerk(old, sck.clnt, shardcfg.Tshid(i))
+			oldState, _ := oldClerk.FreezeShard(shardcfg.Tshid(i), new.Num)
+			newClerk := shardgrp.ShardgrpClerk(new, sck.clnt, shardcfg.Tshid(i))
+			newClerk.InstallShard(shardcfg.Tshid(i), oldState, new.Num)
+			oldClerk.DeleteShard(shardcfg.Tshid(i), new.Num)
+		}
+	}
+	_, version, _ = sck.Get("cfg")
+	sck.Put("cfg", new.String(), version)
+	shardutils.DPrintf("shardctrler", "ChangeConfig completed, new config: %s", new.String())
 }
 
 // Return the current configuration
 func (sck *ShardCtrler) Query() *shardcfg.ShardConfig {
 	// Your code here.
 	cfgStr, _, _ := sck.Get("cfg")
+	return shardcfg.FromString(cfgStr)
+}
+
+func (sck *ShardCtrler) QueryNext() *shardcfg.ShardConfig {
+	// Your code here.
+	cfgStr, _, _ := sck.Get("nxt")
 	return shardcfg.FromString(cfgStr)
 }

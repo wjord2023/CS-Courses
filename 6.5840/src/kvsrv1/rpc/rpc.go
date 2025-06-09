@@ -16,6 +16,8 @@ const (
 	ErrWrongGroup       = "ErrWrongGroup"
 	ErrLeadershipChange = "ErrLeadershipChange"
 	ErrShutDown         = "ErrShutDown"
+
+	ErrWrongNum = "ErrWrongNum"
 )
 
 type Tversion uint64

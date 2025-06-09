@@ -8,11 +8,13 @@ import (
 	"slices"
 	"testing"
 
-	"6.5840/tester1"
+	tester "6.5840/tester1"
 )
 
-type Tshid int
-type Tnum int
+type (
+	Tshid int
+	Tnum  int
+)
 
 const (
 	NShards  = 12 // The number of shards.
@@ -122,7 +124,7 @@ func least(c *ShardConfig) tester.Tgid {
 func (c *ShardConfig) Rebalance() {
 	// if no groups, un-assign all shards
 	if len(c.Groups) < 1 {
-		for s, _ := range c.Shards {
+		for s := range c.Shards {
 			c.Shards[s] = 0
 		}
 		return
@@ -131,7 +133,7 @@ func (c *ShardConfig) Rebalance() {
 	// assign all unassigned shards
 	for s, g := range c.Shards {
 		_, ok := c.Groups[g]
-		if ok == false {
+		if !ok {
 			lg := least(c)
 			c.Shards[s] = lg
 		}
@@ -175,7 +177,7 @@ func (cfg *ShardConfig) Join(servers map[tester.Tgid][]string) bool {
 		cfg.Groups[gid] = servers
 		changed = true
 	}
-	if changed == false {
+	if !changed {
 		log.Fatalf("Join but no change")
 	}
 	cfg.Num += 1
@@ -186,7 +188,7 @@ func (cfg *ShardConfig) Leave(gids []tester.Tgid) bool {
 	changed := false
 	for _, gid := range gids {
 		_, ok := cfg.Groups[gid]
-		if ok == false {
+		if !ok {
 			// already no GID!
 			log.Printf("Leave(%v) but not in config", gid)
 			return false
@@ -196,7 +198,7 @@ func (cfg *ShardConfig) Leave(gids []tester.Tgid) bool {
 			changed = true
 		}
 	}
-	if changed == false {
+	if !changed {
 		debug.PrintStack()
 		log.Fatalf("Leave but no change")
 	}
@@ -243,7 +245,7 @@ func (cfg *ShardConfig) CheckConfig(t *testing.T, groups []tester.Tgid) {
 	// are the groups as expected?
 	for _, g := range groups {
 		_, ok := cfg.Groups[g]
-		if ok != true {
+		if !ok {
 			fatalf(t, "missing group %v", g)
 		}
 	}
@@ -252,7 +254,7 @@ func (cfg *ShardConfig) CheckConfig(t *testing.T, groups []tester.Tgid) {
 	if len(groups) > 0 {
 		for s, g := range cfg.Shards {
 			_, ok := cfg.Groups[g]
-			if ok == false {
+			if !ok {
 				fatalf(t, "shard %v -> invalid group %v", s, g)
 			}
 		}
@@ -265,7 +267,7 @@ func (cfg *ShardConfig) CheckConfig(t *testing.T, groups []tester.Tgid) {
 	}
 	min := 257
 	max := 0
-	for g, _ := range cfg.Groups {
+	for g := range cfg.Groups {
 		if counts[g] > max {
 			max = counts[g]
 		}
