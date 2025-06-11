@@ -182,7 +182,7 @@ func (kv *KVServer) doDeleteShard(args *shardrpc.DeleteShardArgs) *shardrpc.Dele
 	shardutils.DPrintf("shardgrp", "KVServer %d: doDeleteShard %v", kv.me, args)
 	kv.deleteMaxNums[args.Shard] = args.Num
 	delete(kv.shards, args.Shard)
-	// kv.freezed[args.Shard] = true
+	kv.freezed[args.Shard] = true
 	return &shardrpc.DeleteShardReply{Err: rpc.OK}
 }
 

@@ -8,6 +8,7 @@ import (
 	"reflect"
 
 	kvsrv "6.5840/kvsrv1"
+	"6.5840/kvsrv1/rpc"
 	kvtest "6.5840/kvtest1"
 	"6.5840/shardkv1/shardcfg"
 	"6.5840/shardkv1/shardgrp"
@@ -23,6 +24,7 @@ type ShardCtrler struct {
 	killed int32 // set by Kill()
 
 	// Your data here.
+	skipVersionCheck bool // skip version check for testing
 }
 
 // Make a ShardCltler, which stores its state in a kvsrv.
@@ -65,31 +67,42 @@ func (sck *ShardCtrler) InitConfig(cfg *shardcfg.ShardConfig) {
 // controller.
 func (sck *ShardCtrler) ChangeConfigTo(new *shardcfg.ShardConfig) {
 	// Your code here.
-	_, version, _ := sck.Get("nxt")
-	sck.Put("nxt", new.String(), version)
-
-	if new.Num <= sck.Query().Num {
+	// _, version, _ := sck.Get("nxt")
+	old := sck.Query()
+	if new.Num <= old.Num {
 		return // Ignore if the new config is not newer than the current one
 	}
 
-	old := sck.Query()
-	shardutils.DPrintf("shardctrler", "ChangeConfig from %s To %s", old.String(), new.String())
+	sck.Put("nxt", new.String(), rpc.Tversion(new.Num-1))
+
+	nxt := sck.QueryNext()
+
 	for i := range shardcfg.NShards {
 		oldGid, oldSrvs, oldOk := old.GidServers(shardcfg.Tshid(i))
-		newGid, newSrvs, newOk := new.GidServers(shardcfg.Tshid(i))
+		newGid, newSrvs, newOk := nxt.GidServers(shardcfg.Tshid(i))
 		if !oldOk || !newOk {
 			panic("ChangeConfigTo: shard not found in config")
 		}
 		if oldGid != newGid || !reflect.DeepEqual(oldSrvs, newSrvs) {
 			oldClerk := shardgrp.ShardgrpClerk(old, sck.clnt, shardcfg.Tshid(i))
-			oldState, _ := oldClerk.FreezeShard(shardcfg.Tshid(i), new.Num)
-			newClerk := shardgrp.ShardgrpClerk(new, sck.clnt, shardcfg.Tshid(i))
-			newClerk.InstallShard(shardcfg.Tshid(i), oldState, new.Num)
-			oldClerk.DeleteShard(shardcfg.Tshid(i), new.Num)
+			oldState, err := oldClerk.FreezeShard(shardcfg.Tshid(i), nxt.Num)
+			if err == rpc.ErrWrongGroup {
+				return // If freezing the shard fails, abort the change
+			}
+			newClerk := shardgrp.ShardgrpClerk(nxt, sck.clnt, shardcfg.Tshid(i))
+
+			err = newClerk.InstallShard(shardcfg.Tshid(i), oldState, nxt.Num)
+			if err == rpc.ErrWrongGroup {
+				return
+			}
+			err = oldClerk.DeleteShard(shardcfg.Tshid(i), nxt.Num)
+			if err == rpc.ErrWrongGroup {
+				return
+			}
 		}
 	}
-	_, version, _ = sck.Get("cfg")
-	sck.Put("cfg", new.String(), version)
+	_, version, _ := sck.Get("cfg")
+	sck.Put("cfg", nxt.String(), version)
 	shardutils.DPrintf("shardctrler", "ChangeConfig completed, new config: %s", new.String())
 }
 

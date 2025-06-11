@@ -116,13 +116,18 @@ func (ck *Clerk) FreezeShard(s shardcfg.Tshid, num shardcfg.Tnum) ([]byte, rpc.E
 	args := shardrpc.FreezeShardArgs{Shard: s, Num: num}
 	reply := shardrpc.FreezeShardReply{}
 
+	failTimes := 0
 	for valid := false; !valid; {
 		shardutils.DPrintf("shardgrp", "FreezeShard %v %d", s, num)
 		ok := ck.clnt.Call(ck.servers[ck.leader], "KVServer.FreezeShard", &args, &reply)
 
 		if !ok || reply.Err == rpc.ErrWrongLeader || reply.Err == rpc.ErrShutDown {
 			ck.changeLeader()
+			failTimes += 1
 			time.Sleep(10 * time.Millisecond)
+		}
+		if failTimes > 40 {
+			return nil, rpc.ErrWrongGroup
 		}
 		valid = ok && (reply.Err == rpc.OK || reply.Err == rpc.ErrWrongNum)
 	}
@@ -135,13 +140,18 @@ func (ck *Clerk) InstallShard(s shardcfg.Tshid, state []byte, num shardcfg.Tnum)
 	args := shardrpc.InstallShardArgs{Shard: s, State: state, Num: num}
 	reply := shardrpc.InstallShardReply{}
 
+	failTimes := 0
 	for valid := false; !valid; {
 		shardutils.DPrintf("shardgrp", "InstallShard %v %v %d", s, state, num)
 		ok := ck.clnt.Call(ck.servers[ck.leader], "KVServer.InstallShard", &args, &reply)
 
 		if !ok || reply.Err == rpc.ErrWrongLeader || reply.Err == rpc.ErrShutDown {
 			ck.changeLeader()
+			failTimes += 1
 			time.Sleep(10 * time.Millisecond)
+		}
+		if failTimes > 40 {
+			return rpc.ErrWrongGroup
 		}
 		valid = ok && (reply.Err == rpc.OK || reply.Err == rpc.ErrWrongNum)
 	}
@@ -154,13 +164,18 @@ func (ck *Clerk) DeleteShard(s shardcfg.Tshid, num shardcfg.Tnum) rpc.Err {
 	args := shardrpc.DeleteShardArgs{Shard: s, Num: num}
 	reply := shardrpc.DeleteShardReply{}
 
+	failTimes := 0
 	for valid := false; !valid; {
 		shardutils.DPrintf("shardgrp", "DeleteShard %v %d", s, num)
 		ok := ck.clnt.Call(ck.servers[ck.leader], "KVServer.DeleteShard", &args, &reply)
 
 		if !ok || reply.Err == rpc.ErrWrongLeader || reply.Err == rpc.ErrShutDown {
 			ck.changeLeader()
+			failTimes += 1
 			time.Sleep(10 * time.Millisecond)
+		}
+		if failTimes > 40 {
+			return rpc.ErrWrongGroup
 		}
 		valid = ok && (reply.Err == rpc.OK || reply.Err == rpc.ErrWrongNum)
 	}

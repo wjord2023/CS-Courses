@@ -2,7 +2,7 @@ package shardutils
 
 import "log"
 
-var Debug bool = true
+var Debug bool = true // set to false to disable debug output
 
 func DPrintf(dtype string, format string, a ...any) {
 	if Debug {
